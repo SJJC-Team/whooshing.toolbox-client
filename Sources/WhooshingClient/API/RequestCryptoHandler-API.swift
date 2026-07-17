@@ -5,6 +5,7 @@ import Foundation
 import AsyncHTTPClient
 import AnyCodable
 import LoggingAdvanced
+import NIOConcurrencyHelpers
 
 extension APIReqClient {
     @inlinable
@@ -23,13 +24,29 @@ enum API {
     }
     
     @usableFromInline
-    final class RequestIOData: SendableStorage.Key, Sendable, CustomStringConvertible, Loggerable {
+    final class RequestIOData: SendableStorage.Key, @unchecked Sendable, CustomStringConvertible, Loggerable {
         @usableFromInline typealias Value = RequestIOData
         @usableFromInline let credential: String
         @usableFromInline let token: String
-        @usableFromInline let connectionKeys: SendableDictionary<ObjectIdentifier, SendableSymmKey> = .init()
-        @usableFromInline let readingBufferDatas: SendableDictionary<ObjectIdentifier, ByteBuffer> = .init()
-        @usableFromInline let errorTemps: SendableDictionary<ObjectIdentifier, Bool> = .init()
+        
+        @usableFromInline var connectionKey: SendableSymmKey? {
+            get { lock.withLock { _connectionKey } }
+            set { lock.withLock { _connectionKey = newValue } }
+        }
+        @usableFromInline var readingBufferData: ByteBuffer? {
+            get { lock.withLock { _readingBufferData } }
+            set { lock.withLock { _readingBufferData = newValue } }
+        }
+        @usableFromInline var errorTemp: Bool? {
+            get { lock.withLock { _errorTemp } }
+            set { lock.withLock { _errorTemp = newValue } }
+        }
+        
+        var _connectionKey: SendableSymmKey?
+        var _readingBufferData: ByteBuffer?
+        var _errorTemp: Bool?
+        
+        private let lock = NIOLock()
         
         @usableFromInline
         init(credential: String, token: String) {
@@ -71,10 +88,9 @@ enum API {
                 return context.eventLoop.makeSucceededResult(data)
             }
             guard let ioData = client?.apiRequestIoData else { return context.eventLoop.makeFailedResult(Errcase.internalFailure.d("apiRequestIoData", category: .internal)) }
-            let id = ObjectIdentifier(context.channel)
             do {
                 let cipher: Data
-                if let key = ioData.connectionKeys[id] {
+                if let key = ioData.connectionKey {
                     logger?.debug("使用已有密钥加密通讯")
                     cipher = try required(throws: Errcase.requestEncryptFailed, category: .internal) {
                         try Crypto.Symm.encrypt(data, key: key.key).get()
@@ -95,7 +111,6 @@ enum API {
         @usableFromInline
         func get(data: ByteBuffer, context: ChannelHandlerContext, logger: Logger?) -> EventLoopRes<ByteBuffer, Errcase> {
             logger?.debug("API.Client.HTTP-收到响应，先检查是否有报错", metadata: ["client_addr": .string(context.channel.clientAddrInfo)])
-            let id = ObjectIdentifier(context.channel)
             
             guard data.readableBytes > 0 else {
                 logger?.debug("响应数据为空，忽略")
@@ -104,15 +119,15 @@ enum API {
             guard let ioData = client?.apiRequestIoData else { return context.eventLoop.makeFailedResult(Errcase.internalFailure.d("apiRequestIoData 读取失败", category: .internal)) }
             
             // 检查对方回复的是不是一个未加密的 http 回复，如果是，则表示对方出错
-            if let _ = ioData.errorTemps[id] {
+            if let _ = ioData.errorTemp {
                 // 如果错误已经存在了，则直接报错
                 let err = parseError(body: data)
-                ioData.errorTemps[id] = nil
+                ioData.errorTemp = nil
                 return context.eventLoop.makeFailedResult(err)
             } else {
                 // 错误不存在，从对方的响应中尝试解析出错误
                 if lightweightParseHTTP1StatusCode(from: data) {
-                    ioData.errorTemps[id] = true
+                    ioData.errorTemp = true
                     return context.eventLoop.makeSucceededResult(data)
                 }
             }
@@ -120,7 +135,7 @@ enum API {
             do {
                 logger?.debug("API.Client.HTTP-收到响应，进行解密", metadata: ["client_addr": .string(context.channel.clientAddrInfo)])
                 var plain: ByteBuffer
-                if let key = ioData.connectionKeys[id] {
+                if let key = ioData.connectionKey {
                     logger?.debug("使用已有密钥进行解密")
                     plain = try required(throws: Errcase.responseDecryptFailed, category: .internal) {
                         try Crypto.Symm.decrypt(.init(buffer: data), key: key.key).get()
@@ -154,9 +169,8 @@ enum API {
         @usableFromInline
         func connectionEnd(context: ChannelHandlerContext, logger: Logger?) -> EventLoopRes<Void, Errcase> {
             logger?.debug("API.Client-连线结束", metadata: ["client_addr": .string(context.channel.clientAddrInfo)])
-            let id = ObjectIdentifier(context.channel)
-            client?.apiRequestIoData?.connectionKeys[id] = nil
-            client?.apiRequestIoData?.readingBufferDatas[id] = nil
+            client?.apiRequestIoData?.connectionKey = nil
+            client?.apiRequestIoData?.readingBufferData = nil
             return context.eventLoop.makeSucceededVoidResult()
         }
 

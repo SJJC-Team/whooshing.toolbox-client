@@ -18,8 +18,8 @@ public final class ApiClient: Sendable {
     public var key: SendableSymmKey? {
         guard
             let ioData = client.storage[API.RequestIOData.self],
-            let channel = client.channel,
-            let key = ioData.connectionKeys[ObjectIdentifier(channel)]
+            let _ = client.channel,
+            let key = ioData.connectionKey
         else { return nil }
         return key
     }
@@ -57,7 +57,7 @@ public final class ApiClient: Sendable {
     @inlinable
     public func shutdown() async throws {
         logger?.info("API.Client-主动关闭连接", metadata: ["client_addr": .stringConvertible(channel?.clientAddrInfo ?? "released")])
-        await client.closeAll()
+        await client.close()
     }
     
     @inlinable
@@ -82,7 +82,7 @@ public final class ApiClient: Sendable {
     deinit {
         client.logger?.debug("API.Client-主动关闭连接")
         Task { [weak client] in
-            await client?.closeAll()
+            await client?.close()
         }
     }
 }

@@ -50,12 +50,11 @@ final class APIReqClient: ReqClient<API.RequestIOCrypto>, SendableStorage.Key, @
         handler: RequestWrapperHandler,
         domain: String?
     ) -> EventLoopResult<HTTPResponse, Failure> {
-        let id = ObjectIdentifier(channel)
         var r = eventLoop.makeSucceededVoidResult(throws: Failure.self)
         guard let ioData = self.apiRequestIoData else {
             return eventLoop.makeFailedResult(Errcase.internalFailure, "请求参数缺失: apiRequestIoData", category: .internal)
         }
-        if ioData.connectionKeys[id] == nil {
+        if ioData.connectionKey == nil {
             self.logger?.debug("正在与服务器进行认证", metadata: ["client_addr": .string(channel.clientAddrInfo)])
             r = r.flatMap {
                 self.authExchange(request: request, handler: handler, domain: domain, channel: channel)
@@ -70,6 +69,11 @@ final class APIReqClient: ReqClient<API.RequestIOCrypto>, SendableStorage.Key, @
     struct AuthExchangeJSON: Encodable {
         let credential: Data
         let tokenEncrypted: Data
+        
+        enum CodingKeys: String, CodingKey {
+            case credential
+            case tokenEncrypted = "token_encrypted"
+        }
     }
 
     /// 发送用户凭据以及用户口令，其中用户凭据明文发送，口令则进行哈希加密：密文 = [口令加密[口令 hash]]
@@ -149,16 +153,14 @@ final class APIReqClient: ReqClient<API.RequestIOCrypto>, SendableStorage.Key, @
                 try Crypto.Symm.decrypt(keyEncrypted, key: tokenKey).get()
             }
             
-            let id = ObjectIdentifier(channel)
-            
             self.logger?.debug("API.Client-正在完成认证: 注册该新密钥，用于将来的连线加密")
-            ioData.connectionKeys[id] = newKey
+            ioData.connectionKey = newKey
         }
     }
 
     deinit {
         Task { [weak self] in
-            await self?.closeAll()
+            await self?.close()
         }
     }
 }

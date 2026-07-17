@@ -14,7 +14,6 @@ open class ReqClient<IOHandler>: @unchecked Sendable where IOHandler: RequestCry
     public let byteBufferAllocator: ByteBufferAllocator
     public var ioHandler: IOHandler!
     public let storage: SendableStorage = .init()
-    public internal(set) var channelPool: SendableDictionary<String, Channel> = .init()
     public weak var channel: Channel? {
         if let channel = __channel, channel.isActive { return channel }
         return nil
@@ -74,15 +73,6 @@ extension ReqClient {
             }
             port = p
         }
-
-        let id = "\(url.host):\(port)"
-
-        if let channel = self.channelPool[id], channel.isActive {
-            return channel.pipeline.handler(type: RequestWrapperHandler.self).flatMap { handler in
-                self.__channel = channel
-                return channel.eventLoop.makeSucceededFuture((channel, handler, isDomainHost ? url.host : nil))
-            }.withError(Errcase.tcpHandlerInitialFailed, category: .inherit)
-        }
         
         let cryptoHandler = RequestCryptoHandler(logger: logger?.derive(subId: "handler.crypto"), ioHandler: ioHandler)
         let wrapperHandler = RequestWrapperHandler(logger: logger?.derive(subId: "handler.wrapper"))
@@ -115,7 +105,6 @@ extension ReqClient {
             .channelOption(.autoRead, value: false)
 
         return bootstrap.connect(host: url.host, port: port).map { channel in
-            self.channelPool[id] = channel
             self.__channel = channel
             return (channel, wrapperHandler, isDomainHost ? url.host : nil)
         }.withError(Errcase.tcpHandlerInitialFailed, category: .internal)
@@ -140,13 +129,14 @@ extension ReqClient {
         }
     }
 
-    public func closeAll() async {
-        self.logger?.info("关闭所有该 Handler 处理的 Channels", metadata: ["client_addr": .string(channel?.clientAddrInfo ?? "released")])
-        for (_, channel) in channelPool {
-            self.logger?.info("正在关闭 Channel", metadata: ["channel_client_addr": .string(channel.clientAddrInfo)])
-            try? await channel.close(mode: .all)
+    public func close() async {
+        guard let channel = channel else {
+            self.logger?.info("通道未建立，无需关闭请求连线")
+            return
         }
-        channelPool.removeAll()
+        
+        self.logger?.info("正在关闭请求连线", metadata: ["channel_client_addr": .string(channel.clientAddrInfo)])
+        try? await channel.close(mode: .all)
     }
     
     public func removeHTTPHandlers(in eventLoop: any EventLoop) -> EventLoopRes<Void, Errcase> {

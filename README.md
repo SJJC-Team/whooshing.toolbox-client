@@ -33,7 +33,7 @@ WhooshingClient 是 Whooshing 系统中的通用网络请求库，具备同步�
 在你的 Package.swift 加入：
 
 ``` swift
-.package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-client.git", from: "1.3.2")
+.package(url: "https://github.com/whooshing-workshop/whooshing.toolbox-client.git", from: "1.3.3")
 ```
 
 在依赖模块中引入:
